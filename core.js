@@ -45,5 +45,19 @@
     }
     return {kind:fix.kind,short:fix.short,title:fix.label,detail:fix.kind==='stale'?'No hay una posición reciente. No podemos determinar la causa.':''};
   }
-  const api={slug,today,validPoint,cleanPoints,freshness,ageLabel,meters,segments,distance,csv,memberDirectories,deviceState};if(typeof module!=='undefined'&&module.exports)module.exports=api;else root.FamilyCore=api;
+  function cleanPlaces(data){
+    if(!Array.isArray(data)||data.length>100)throw new Error('El archivo debe contener hasta 100 lugares.');
+    const ids=new Set();
+    return data.map(p=>{
+      if(!p||typeof p.id!=='string'||!/^[-_A-Za-z0-9]{1,80}$/.test(p.id)||ids.has(p.id)||typeof p.name!=='string'||!p.name.trim()||p.name.trim().length>50||/[\u0000-\u001f\u007f]/.test(p.name)||typeof p.lat!=='number'||!Number.isFinite(p.lat)||Math.abs(p.lat)>90||typeof p.lon!=='number'||!Number.isFinite(p.lon)||Math.abs(p.lon)>180||typeof p.radius!=='number'||!Number.isFinite(p.radius)||p.radius<25||p.radius>1000)throw new Error('Revisá los nombres, coordenadas y radios de los lugares.');
+      ids.add(p.id);return {id:p.id,name:p.name.trim(),lat:p.lat,lon:p.lon,radius:p.radius};
+    });
+  }
+  function placeFor(point,places){
+    if(!validPoint(point)||!Number.isFinite(point.acc)||point.acc<=0)return null;
+    return places.map(place=>({place,distance:meters(point,place)}))
+      .filter(({place,distance})=>distance+point.acc<=place.radius)
+      .sort((a,b)=>a.distance-b.distance||a.place.radius-b.place.radius)[0]?.place||null;
+  }
+  const api={slug,today,validPoint,cleanPoints,freshness,ageLabel,meters,segments,distance,csv,memberDirectories,deviceState,cleanPlaces,placeFor};if(typeof module!=='undefined'&&module.exports)module.exports=api;else root.FamilyCore=api;
 })(typeof globalThis!=='undefined'?globalThis:this);
