@@ -22,7 +22,7 @@
   };
   const svg=name=>`<svg viewBox="0 0 24 24" aria-hidden="true">${icons[name]||icons.pin}</svg>`;
   document.querySelectorAll('[data-icon]').forEach(el=>{el.innerHTML=svg(el.dataset.icon);});
-  const state={demo:true,config:null,members:[],selected:'',latest:new Map(),points:[],errors:new Map(),map:null,layer:null,controller:null,version:0,limit:8,lastDay:C.today(),cooldown:0,fit:true};
+  const state={demo:true,config:null,members:[],selected:'',latest:new Map(),status:new Map(),points:[],errors:new Map(),map:null,layer:null,controller:null,version:0,limit:8,lastDay:C.today(),cooldown:0,fit:true};
   const colors=['#dbead8','#e7dff0','#f0e6d2','#dce9ec','#eddbd8'];
   let toastTimer;
   function toast(message){$('toast').textContent=message;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>{$('toast').hidden=true;},4500);}
@@ -49,7 +49,7 @@
     return null;
   }
   function setMode(config=null){
-    state.controller?.abort();state.version++;state.config=config;state.demo=!config;state.latest.clear();state.errors.clear();state.points=[];
+    state.controller?.abort();state.version++;state.config=config;state.demo=!config;state.latest.clear();state.status.clear();state.errors.clear();state.points=[];
     state.members=config?.members||[{id:'sofia',label:'Sofía'},{id:'mateo',label:'Mateo'},{id:'papa',label:'Papá'}];
     state.selected=state.members[0].id;state.limit=8;state.cooldown=0;state.fit=true;
     $('demo-banner').hidden=!state.demo;$('map-demo-label').hidden=!state.demo;
@@ -84,7 +84,7 @@
     const res=await fetch(`https://api.github.com/repos/${encodeURIComponent(c.owner)}/${encodeURIComponent(c.repo)}${path}`,{
       signal,cache:'no-store',headers:{Authorization:`Bearer ${c.token}`,Accept:raw?'application/vnd.github.raw+json':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'}
     });
-    if(res.status===404&&raw)return null;
+    if(res.status===404&&(raw||path==='/contents/data'))return null;
     if(!res.ok){
       if(res.status===403||res.status===429){
         const wait=Number(res.headers.get('Retry-After'));
@@ -100,7 +100,7 @@
     if(document.hidden)return;
     if(!state.demo&&Date.now()<state.cooldown){toast('Esperá un momento antes de volver a consultar GitHub.');return;}
     state.controller?.abort();const controller=new AbortController();state.controller=controller;
-    const version=++state.version;const target=state.selected,date=$('date-pick').value;
+    const version=++state.version;let target=state.selected;const date=$('date-pick').value;
     state.fit=fit;$('refresh').classList.add('loading');$('refresh').disabled=true;
     const timeout=setTimeout(()=>controller.abort('timeout'),25000);
     try{
@@ -108,18 +108,36 @@
       else{
         const metadata=await api('',controller.signal);
         if(!metadata.private)throw new Error('Este repositorio es público. Usá uno privado para proteger las ubicaciones.');
+        const directory=await api('/contents/data',controller.signal);
+        if(version!==state.version)return;
+        const discovered=C.memberDirectories(directory,state.config.members);
+        if(discovered.length){
+          state.members=discovered;
+          if(!discovered.some(m=>m.id===state.selected)){state.selected=discovered[0].id;state.points=[];state.limit=8;state.fit=true;}
+          target=state.selected;$('member-count').textContent=String(state.members.length);
+        }
         const results=await Promise.allSettled([
           file(target,`${date}.json`,controller.signal),
-          ...state.members.map(m=>file(m.id,'latest.json',controller.signal))
+          ...state.members.map(m=>file(m.id,'latest.json',controller.signal)),
+          ...state.members.map(m=>file(m.id,'status.json',controller.signal))
         ]);
         if(version!==state.version)return;
         const history=results[0];state.errors.clear();
         if(history.status==='fulfilled')state.points=C.cleanPoints(history.value||[]);
         else throw history.reason;
-        results.slice(1).forEach((result,i)=>{
+        results.slice(1,1+state.members.length).forEach((result,i)=>{
           const id=state.members[i].id;
           if(result.status==='fulfilled')state.latest.set(id,C.validPoint(result.value)?result.value:null);
           else state.errors.set(id,result.reason.message||'No se pudo actualizar');
+        });
+        results.slice(1+state.members.length).forEach((result,i)=>{
+          const id=state.members[i].id;
+          if(result.status==='fulfilled'){
+            const report=result.value&&!Array.isArray(result.value)?result.value:null;
+            state.status.set(id,report);
+            if(report&&typeof report.label==='string'&&report.label.trim().length>0&&report.label.trim().length<=40)state.members[i].label=report.label.trim();
+          }
+          else state.errors.set(id,result.reason.message||'No se pudo actualizar el estado');
         });
         notice(state.errors.size?'No se pudieron actualizar algunos familiares. Mostramos la última información recibida.':'');
       }
@@ -137,7 +155,7 @@
   function renderMembers(){
     const fragment=document.createDocumentFragment();
     for(const member of state.members){
-      const p=state.latest.get(member.id),status=C.freshness(p);
+      const p=state.latest.get(member.id),status=C.deviceState(state.status.get(member.id),p);
       const b=node('button',`member ${state.selected===member.id?'current':''}`);b.type='button';b.setAttribute('aria-pressed',String(state.selected===member.id));
       b.append(avatar(member,p));const info=node('span','member-info');info.append(node('span','member-name',member.label),node('span','member-state',state.errors.has(member.id)?'No se pudo actualizar':status.short));b.append(info,node('span','member-chevron','›'));b.addEventListener('click',()=>select(member.id));fragment.append(b);
     }
@@ -147,10 +165,10 @@
     const member=selected();if(!member)return;
     const historical=$('date-pick').value!==C.today();
     const p=historical?state.points[state.points.length-1]:state.latest.get(member.id);
-    const status=C.freshness(p),card=$('location-card');card.replaceChildren();
+    const status=C.freshness(p),health=C.deviceState(state.status.get(member.id),p),card=$('location-card');card.replaceChildren();
     const top=node('div','location-top');top.append(avatar(member,p));const who=node('div');who.append(node('div','location-name',member.label),node('div','location-time',p?fullTime(p):'Todavía sin registros'));top.append(who,node('span',`status-tag ${status.kind!=='fresh'?'old':''}`,historical?'Historial':status.kind==='fresh'?'Reciente':status.kind==='unknown'?'Sin datos':'Sin señal reciente'));card.append(top,node('div','location-separator'));
     const caption=node('div','location-caption');
-    caption.append(node('strong','',historical?'Último punto de la fecha':status.label));
+    caption.append(node('strong','',historical?'Último punto de la fecha':health.title));
     caption.append(node('span','',p?`${p.lat.toFixed(5)}, ${p.lon.toFixed(5)} · ±${Math.round(Number(p.acc)||0)} m`:'Al iniciar el seguimiento aparecerá acá.'));card.append(caption);
     if(p){const bottom=node('div','location-bottom');const battery=node('span');battery.innerHTML=svg('battery');battery.append(document.createTextNode(Number.isFinite(p.battery)&&p.battery>=0?`${p.battery}% batería`:'Sin dato de batería'));bottom.append(battery);const link=node('a','','Abrir mapa ↗');link.href=`https://www.openstreetmap.org/?mlat=${p.lat}&mlon=${p.lon}#map=16/${p.lat}/${p.lon}`;link.target='_blank';link.rel='noopener noreferrer';bottom.append(link);card.append(bottom);}
   }
@@ -192,7 +210,10 @@
     $('stat-points').textContent=String(state.points.length);
     $('stat-range').textContent=state.points.length?`${time(state.points[0])} — ${time(state.points[state.points.length-1])}`:'Sin registros para esta fecha';
     const latest=state.latest.get(member.id);$('stat-age').textContent=latest?C.ageLabel(latest).replace('Hace ',''):'Sin datos';
-    $('stat-accuracy').textContent=latest?`${C.freshness(latest).short} · ±${Math.round(Number(latest.acc)||0)} m`:'Esperando una ubicación';
+    const health=C.deviceState(state.status.get(member.id),latest);
+    $('stat-accuracy').textContent=latest?`${health.short} · ±${Math.round(Number(latest.acc)||0)} m`:health.short;
+    const warning=['disabled','permission','paused','stale','stale_location','clock'].includes(health.kind)&&$('date-pick').value===C.today();
+    $('device-notice').hidden=!warning;$('device-notice').textContent=warning?`${health.title}. ${health.detail}`:'';
   }
   function reducedMotion(){return window.matchMedia('(prefers-reduced-motion: reduce)').matches;}
   function openSettings(){
