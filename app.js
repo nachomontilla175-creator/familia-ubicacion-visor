@@ -25,6 +25,15 @@
   const state={demo:true,config:null,members:[],selected:'',latest:new Map(),status:new Map(),points:[],errors:new Map(),map:null,layer:null,controller:null,version:0,limit:8,lastDay:C.today(),cooldown:0,fit:true};
   const colors=['#dbead8','#e7dff0','#f0e6d2','#dce9ec','#eddbd8'];
   let toastTimer;
+  let places=[],editingPoint=null,editingPlaceId=null;
+  const placesKey=()=>`family_places_v1:${state.demo?'demo':`${state.config.owner}/${state.config.repo}`}`;
+  function readPlaces(){try{return C.cleanPlaces(JSON.parse(localStorage.getItem(placesKey())||'[]'));}catch{return [];}}
+  function writePlaces(next){
+    const clean=C.cleanPlaces(next);
+    try{localStorage.setItem(placesKey(),JSON.stringify(clean));}
+    catch{throw new Error('El navegador no permite guardar tus lugares. Habilitá el almacenamiento para este sitio.');}
+    places=clean;render();
+  }
   function toast(message){$('toast').textContent=message;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>{$('toast').hidden=true;},4500);}
   function notice(message=''){$('notice').textContent=message;$('notice').hidden=!message;}
   function time(p){return new Intl.DateTimeFormat('es-AR',{hour:'2-digit',minute:'2-digit'}).format(new Date(p.t));}
@@ -52,6 +61,7 @@
     state.controller?.abort();state.version++;state.config=config;state.demo=!config;state.latest.clear();state.status.clear();state.errors.clear();state.points=[];
     state.members=config?.members||[{id:'sofia',label:'Sofía'},{id:'mateo',label:'Mateo'},{id:'papa',label:'Papá'}];
     state.selected=state.members[0].id;state.limit=8;state.cooldown=0;state.fit=true;
+    places=readPlaces();
     $('demo-banner').hidden=!state.demo;$('map-demo-label').hidden=!state.demo;
     $('mode-pill').textContent=state.demo?'Demostración':'Espacio privado';$('mode-pill').classList.toggle('real',!state.demo);
     $('member-count').textContent=String(state.members.length);
@@ -169,8 +179,13 @@
     const top=node('div','location-top');top.append(avatar(member,p));const who=node('div');who.append(node('div','location-name',member.label),node('div','location-time',p?fullTime(p):'Todavía sin registros'));top.append(who,node('span',`status-tag ${status.kind!=='fresh'?'old':''}`,historical?'Historial':status.kind==='fresh'?'Reciente':status.kind==='unknown'?'Sin datos':'Sin señal reciente'));card.append(top,node('div','location-separator'));
     const caption=node('div','location-caption');
     caption.append(node('strong','',historical?'Último punto de la fecha':health.title));
+    const place=p?C.placeFor(p,places):null;
+    if(place)caption.append(node('strong','saved-place-name',place.name));
     caption.append(node('span','',p?`${p.lat.toFixed(5)}, ${p.lon.toFixed(5)} · ±${Math.round(Number(p.acc)||0)} m`:'Al iniciar el seguimiento aparecerá acá.'));card.append(caption);
-    if(p){const bottom=node('div','location-bottom');const battery=node('span');battery.innerHTML=svg('battery');battery.append(document.createTextNode(Number.isFinite(p.battery)&&p.battery>=0?`${p.battery}% batería`:'Sin dato de batería'));bottom.append(battery);const link=node('a','','Abrir mapa ↗');link.href=`https://www.openstreetmap.org/?mlat=${p.lat}&mlon=${p.lon}#map=16/${p.lat}/${p.lon}`;link.target='_blank';link.rel='noopener noreferrer';bottom.append(link);card.append(bottom);}
+    if(p){
+      const name=node('button','place-card-action',place?'Editar nombre del lugar':'Poner nombre a este lugar');name.type='button';name.addEventListener('click',()=>openPlace(p,place));card.append(name);
+      const bottom=node('div','location-bottom');const battery=node('span');battery.innerHTML=svg('battery');battery.append(document.createTextNode(Number.isFinite(p.battery)&&p.battery>=0?`${p.battery}% batería`:'Sin dato de batería'));bottom.append(battery);const link=node('a','','Abrir mapa ↗');link.href=`https://www.openstreetmap.org/?mlat=${p.lat}&mlon=${p.lon}#map=16/${p.lat}/${p.lon}`;link.target='_blank';link.rel='noopener noreferrer';bottom.append(link);card.append(bottom);
+    }
   }
   function renderMap(){
     if(!state.map)return;state.layer.clearLayers();
@@ -195,9 +210,11 @@
     points.slice(0,state.limit).forEach((p,i)=>{
       const row=node('button','timeline-row');row.type='button';row.setAttribute('aria-label',`Centrar ubicación de las ${time(p)}`);
       row.append(node('span','timeline-time',time(p)),node('span','timeline-dot'));
-      const info=node('span','timeline-content');info.append(node('strong','',i===0?'Última ubicación del recorrido':`Ubicación registrada`),node('small','',`${p.lat.toFixed(5)}, ${p.lon.toFixed(5)}`));row.append(info);
+      const place=C.placeFor(p,places);
+      const info=node('span','timeline-content');info.append(node('strong','',place?place.name:'Lugar sin nombre'),node('small','',`${p.lat.toFixed(5)}, ${p.lon.toFixed(5)}`));row.append(info);
       const acc=node('span','timeline-accuracy');acc.innerHTML=svg('locate');acc.append(document.createTextNode(Number.isFinite(p.acc)?`±${Math.round(p.acc)} m`:'Sin precisión'));row.append(acc);
-      row.addEventListener('click',()=>{if(state.map){state.map.setView([p.lat,p.lon],17);$('map').scrollIntoView({behavior:reducedMotion()?'instant':'smooth',block:'center'});}});fragment.append(row);
+      row.addEventListener('click',()=>{if(state.map){state.map.setView([p.lat,p.lon],17);$('map').scrollIntoView({behavior:reducedMotion()?'instant':'smooth',block:'center'});}});
+      const entry=node('div','timeline-entry'),label=node('button','icon-button place-label-button');label.type='button';label.innerHTML=svg('pin');label.setAttribute('aria-label',`${place?'Editar':'Nombrar'} lugar de las ${time(p)}`);label.title=place?'Editar lugar':'Poner nombre';label.addEventListener('click',()=>openPlace(p,place));entry.append(row,label);fragment.append(entry);
     });
     $('timeline').replaceChildren(fragment);$('show-more').hidden=points.length<=state.limit;$('export').disabled=!points.length;
   }
@@ -216,6 +233,47 @@
     $('device-notice').hidden=!warning;$('device-notice').textContent=warning?`${health.title}. ${health.detail}`:'';
   }
   function reducedMotion(){return window.matchMedia('(prefers-reduced-motion: reduce)').matches;}
+  function placeError(message){$('place-error').textContent=message;$('place-error').hidden=!message;}
+  function openPlace(point,place=null){
+    editingPoint=place||point;editingPlaceId=place?.id||null;
+    $('place-title').textContent=place?'Editar lugar':'Dale nombre a este lugar';
+    $('place-name').value=place?.name||'';$('place-radius').value=String(place?.radius||Math.min(1000,Math.max(100,Math.ceil((Number(point.acc)||0)/50)*50)));
+    $('place-center').textContent=`Centro: ${editingPoint.lat.toFixed(5)}, ${editingPoint.lon.toFixed(5)}`;
+    $('place-form').hidden=false;$('place-delete').hidden=!place;placeError('');renderPlaceList();$('places-dialog').showModal();
+  }
+  function renderPlaceList(){
+    const list=$('places-list');list.replaceChildren();
+    if(!places.length)list.append(node('p','dialog-intro','Todavía no guardaste lugares. Usá el botón de ubicación junto a un registro para nombrarlo.'));
+    for(const place of places){
+      const button=node('button','saved-place-item');button.type='button';button.append(node('strong','',place.name),node('small','',`Zona de ${place.radius} m · Editar`));button.addEventListener('click',()=>{
+        $('places-dialog').close();openPlace(place,place);
+      });list.append(button);
+    }
+    $('places-export').disabled=!places.length;
+  }
+  $('places-open').addEventListener('click',()=>{editingPoint=null;editingPlaceId=null;$('place-form').hidden=true;$('place-title').textContent='Mis lugares';placeError('');renderPlaceList();$('places-dialog').showModal();});
+  $('places-close').addEventListener('click',()=>$('places-dialog').close());
+  $('place-form').addEventListener('submit',e=>{
+    e.preventDefault();if(!editingPoint)return;
+    try{
+      const place={id:editingPlaceId||`place-${Date.now()}-${Math.random().toString(36).slice(2,9)}`,name:$('place-name').value,lat:editingPoint.lat,lon:editingPoint.lon,radius:Number($('place-radius').value)};
+      writePlaces([...places.filter(p=>p.id!==editingPlaceId),place]);$('places-dialog').close();toast('Lugar guardado. Su nombre ya aparece en los registros cercanos.');
+    }catch(error){placeError(error.message);}
+  });
+  $('place-delete').addEventListener('click',()=>{try{writePlaces(places.filter(p=>p.id!==editingPlaceId));$('places-dialog').close();toast('Nombre eliminado. Los registros de ubicación se conservan.');}catch(error){placeError(error.message);}});
+  $('places-export').addEventListener('click',()=>{
+    const url=URL.createObjectURL(new Blob([JSON.stringify({version:1,places},null,2)],{type:'application/json'}));const a=node('a');a.href=url;a.download='Mis-lugares.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);
+  });
+  $('places-import').addEventListener('change',async()=>{
+    const file=$('places-import').files?.[0];if(!file)return;
+    try{
+      if(file.size>100000)throw new Error('El archivo de lugares es demasiado grande.');
+      const data=JSON.parse(await file.text());if(!data||data.version!==1)throw new Error('No es un archivo de Mis lugares compatible.');
+      const incoming=C.cleanPlaces(data.places),merged=new Map(places.map(p=>[p.id,p]));for(const p of incoming)merged.set(p.id,p);
+      writePlaces([...merged.values()]);renderPlaceList();placeError('');toast('Lugares importados en este navegador.');
+    }catch(error){placeError(error instanceof SyntaxError?'El archivo no es válido.':error.message);}
+    finally{$('places-import').value='';}
+  });
   function openSettings(){
     const c=state.config||stored();$('cfg-owner').value=c?.owner||'';$('cfg-repo').value=c?.repo||'';$('cfg-token').value=c?.token||'';$('cfg-members').value=c?.members.map(m=>m.label).join(', ')||'';
     try{$('cfg-remember').checked=!!localStorage.getItem('family_location_v2');}catch{$('cfg-remember').checked=false;}
@@ -243,7 +301,7 @@
   $('settings-close').addEventListener('click',()=>{$('settings-dialog').close();$('cfg-token').type='password';$('toggle-token').setAttribute('aria-label','Mostrar token');});
   $('toggle-token').addEventListener('click',()=>{const show=$('cfg-token').type==='password';$('cfg-token').type=show?'text':'password';$('toggle-token').setAttribute('aria-label',show?'Ocultar token':'Mostrar token');});
   $('use-demo').addEventListener('click',()=>{$('settings-dialog').close();setMode();});
-  $('forget').addEventListener('click',()=>{try{localStorage.removeItem('family_location_v2');sessionStorage.removeItem('family_location_v2');localStorage.removeItem('visor_ubicacion_cfg');}catch{}$('cfg-token').value='';$('settings-dialog').close();setMode();toast('Se olvidaron los datos de acceso en este navegador.');});
+  $('forget').addEventListener('click',()=>{try{localStorage.removeItem(placesKey());localStorage.removeItem('family_location_v2');sessionStorage.removeItem('family_location_v2');localStorage.removeItem('visor_ubicacion_cfg');}catch{}$('cfg-token').value='';$('settings-dialog').close();setMode();toast('Se olvidaron el acceso y los lugares de esta familia en este navegador.');});
   $('refresh').addEventListener('click',()=>load(false));
   $('refresh').setAttribute('aria-label','Actualizar ubicaciones');
   $('date-pick').value=C.today();$('date-pick').max=C.today();
@@ -260,3 +318,4 @@
   setInterval(()=>{if(!document.hidden){renderMembers();renderLocation();}},30000);
   initMap();rollover();setMode(stored());
 })();
+
